@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="popup.css">
+  <title>Gemini Navigator</title>
+</head>
+
+<body>
+  <div id="content"
+    style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-width: 300px;">
+    <div class="header">
+      <img src="images/icon48.png" alt="Gemini Navigator Logo" class="logo" style="width: 40px; height: 40px;">
+      <h1>Gemini Navigator</h1>
+    </div>
+
+    <div class="description">
+      <p>Your AI-powered website exploration companion</p>
+      <div class="features">
+        <div class="feature-item">
+          <span class="icon">🔍</span>
+          <span>Smart website navigation</span>
+        </div>
+
+        <div class="feature-item">
+          <span class="icon">💡</span>
+          <span>Contextual assistance</span>
+        </div>
+
+        <div class="feature-item">
+          <span class="icon">🎯</span>
+          <span>Precise information finding</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-controls">
+      <div class="setting-item">
+        <span>Enable AI Assistant</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="aiToggle" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <script src="popup.js" type="module"></script>
+</body>
+
+</html>
