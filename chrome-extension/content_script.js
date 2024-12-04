@@ -1,8 +1,7 @@
 // =============================================================================
 // CONFIGURATION AND CONSTANTS
 // =============================================================================
-const apiUrl = "https://api.openai.com/v1/chat/completions";
-const model = "gpt-4o";
+let session;
 
 // Speech recognition configuration
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -15,6 +14,39 @@ let isListening = false;
 // =============================================================================
 // TEXT ACCUMULATION AND PROCESSING
 // =============================================================================
+
+
+async function initDefaults() {
+    if (!('aiOriginTrial' in chrome)) {
+        showResponse('Error: chrome.aiOriginTrial not supported in this browser');
+        return;
+    }
+    const defaults = await chrome.aiOriginTrial.languageModel.capabilities();
+    console.log('Model default:', defaults);
+    if (defaults.available !== 'readily') {
+        showResponse(
+            `Model not yet available (current state: "${defaults.available}")`
+        );
+        return;
+    }
+    sliderTemperature.value = defaults.defaultTemperature;
+    // Pending https://issues.chromium.org/issues/367771112.
+    // sliderTemperature.max = defaults.maxTemperature;
+    if (defaults.defaultTopK > 3) {
+        // limit default topK to 3
+        sliderTopK.value = 3;
+        labelTopK.textContent = 3;
+    } else {
+        sliderTopK.value = defaults.defaultTopK;
+        labelTopK.textContent = defaults.defaultTopK;
+    }
+    sliderTopK.max = defaults.maxTopK;
+    labelTemperature.textContent = defaults.defaultTemperature;
+}
+
+initDefaults().catch((error) => {
+    console.error('Error initializing defaults:', error);
+});
 
 /**
  * Manages text accumulation for speech synthesis
@@ -89,121 +121,66 @@ function updateVoiceIcon(isActive) {
 // API INTERACTION AND LOGIC
 // =============================================================================
 
+
+
+
+async function runPrompt(prompt, params) {
+    try {
+        if (!self.ai || !self.ai.languageModel) {
+            throw new Error('Prompt API is not available. Make sure you have joined the Chrome Early Preview Program.');
+        }
+
+        if (!session) {
+            session = await self.ai.languageModel.create({
+                temperature: params?.temperature || 0.7,
+                topK: params?.topK || 40
+            });
+        }
+        // Return the streaming response directly without awaiting
+        return session.prompt(prompt);
+    } catch (e) {
+        console.log('Prompt failed');
+        console.error(e);
+        console.log('Prompt:', prompt);
+        // Reset session
+        if (session) {
+            try {
+                session.destroy();
+            } catch (destroyError) {
+                console.error('Error destroying session:', destroyError);
+            }
+        }
+        session = null;
+        throw e;
+    }
+}
+
+async function reset() {
+    if (session) {
+        session.destroy();
+    }
+    session = null;
+}
+
 /**
- * Handles communication with the OpenAI API and processes the streaming response
+ * Handles communication with the Google's implementation and processes the response
  * @param {string} text - The user's input text
  * @param {string} domContent - The context from the current page
  */
 async function getLogic(text, domContent) {
     try {
-        const response = await fetch(apiUrl, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${YOUR_API_KEY}`,
-            },
-            body: JSON.stringify({
-                model: model,
-                messages: [
-                    {
-                        role: "user",
-                        content: `${text} : refer for response context from: ${domContent}`,
-                    },
-                ],
-                stream: true,
-                max_tokens: 2000,
-            }),
-        });
+        const params = {
+            temperature: 0.7,
+            topK: 40,
+        };
 
-        if (!response.ok) {
-            throw new Error(`API request failed with status ${response.status}`);
-        }
+        const prompt = `Context from current webpage: ${domContent}\n\nUser: ${text}`;
+        const response = await runPrompt(prompt, params);
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        const activeElement = document.activeElement;
-        let currentPosition = activeElement.selectionStart || 0;
-        let buffer = "";
-
-        // Store selection info for contentEditable
-        const selection = window.getSelection();
-        let range;
-
-        // Only get range if there is a selection
-        if (selection && selection.rangeCount > 0) {
-            range = selection.getRangeAt(0);
-        }
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value);
-            buffer += chunk;
-
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-                if (!line.trim() || line.includes("[DONE]")) continue;
-
-                try {
-                    const cleanedLine = line.replace(/^data: /, "").trim();
-                    if (!cleanedLine) continue;
-
-                    const jsonData = JSON.parse(cleanedLine);
-                    const content = jsonData.choices[0]?.delta?.content;
-
-                    if (content) {
-                        if (
-                            activeElement instanceof HTMLTextAreaElement ||
-                            activeElement instanceof HTMLInputElement
-                        ) {
-                            const currentValue = activeElement.value;
-                            activeElement.value =
-                                currentValue.slice(0, currentPosition) +
-                                content +
-                                currentValue.slice(currentPosition);
-                            currentPosition += content.length;
-                            activeElement.selectionStart = currentPosition;
-                            activeElement.selectionEnd = currentPosition;
-                            activeElement.dispatchEvent(
-                                new Event("input", { bubbles: true })
-                            );
-                        } else if (activeElement.isContentEditable && range) {
-                            // Insert text without creating new nodes for each character
-                            const textNode = range.endContainer;
-                            if (textNode.nodeType === Node.TEXT_NODE) {
-                                const offset = range.endOffset;
-                                const newText =
-                                    textNode.textContent.slice(0, offset) +
-                                    content +
-                                    textNode.textContent.slice(offset);
-                                textNode.textContent = newText;
-                                range.setStart(textNode, offset + content.length);
-                                range.setEnd(textNode, offset + content.length);
-                            } else {
-                                const textNode = document.createTextNode(content);
-                                range.insertNode(textNode);
-                                range.setStartAfter(textNode);
-                                range.setEndAfter(textNode);
-                            }
-                            selection.removeAllRanges();
-                            selection.addRange(range);
-                        }
-
-                        if (!/^\s+$/.test(content)) {
-                            await new Promise((resolve) => setTimeout(resolve, 30));
-                        }
-                    }
-                } catch (e) {
-                    continue;
-                }
-            }
-        }
+        return response;
     } catch (error) {
-        console.error("Stream error:", error);
-        throw new Error(`Error fetching completion: ${error.message}`);
+        console.error('Error in getLogic:', error);
+        throw error;
     }
 }
 
@@ -406,6 +383,12 @@ const additionalStyles = `
 
 // Create chat interface
 function createChatInterface() {
+    // Check if interface already exists
+    if (document.getElementById('ai-chat-extension-root')) {
+        console.log('Chat interface already exists, skipping initialization');
+        return;
+    }
+
     // Create a shadow root container
     const container = document.createElement("div");
     container.id = "ai-chat-extension-root";
@@ -499,38 +482,43 @@ function createChatInterface() {
         const question = chatInput.value.trim();
         if (!question) return;
 
-        // show chat window
-        if (chatWindow.style.display === "none") {
-            controlButton.classList.add("hidden");
-            chatWindow.style.display = "block";
-            setTimeout(() => {
-                chatWindow.classList.add("show");
-            }, 10);
-        }
-
-        // Remove previous highlights
-        removeAllHighlights();
-
-        // Add user message to chat
-        appendMessage("user", question);
-        chatInput.value = "";
-
-        // Get page context
-        const pageContext = document.body.innerText;
+        // Disable input while processing
+        chatInput.disabled = true;
 
         try {
-            // First highlight relevant content
+            // show chat window
+            if (chatWindow.style.display === "none") {
+                controlButton.classList.add("hidden");
+                chatWindow.style.display = "block";
+                setTimeout(() => {
+                    chatWindow.classList.add("show");
+                }, 10);
+            }
 
+            // Remove previous highlights
+            removeAllHighlights();
+
+            // Add user message to chat
+            appendMessage("user", question);
+            chatInput.value = "";
+
+            // Get page context
+            const pageContext = document.body.innerText;
+
+            // Process the response
             await streamChatResponse(question, pageContext, messagesContainer);
 
-            // Then get the chat response
             await highlightRelevantContent(question, pageContext);
+
         } catch (error) {
             appendMessage(
                 "error",
-                "Sorry, there was an error processing your request."
+                "An error occurred while processing your request. Please try again."
             );
-            console.error("Chat error:", error);
+            console.error(error);
+        } finally {
+            // Re-enable input after processing
+            chatInput.disabled = false;
         }
     }
 
@@ -571,149 +559,85 @@ function createChatInterface() {
         }
     }
 
-    async function streamChatResponse(question, pageContext, messagesContainer) {
-        const messageDiv = document.createElement("div");
-        messageDiv.className = "chat-message assistant-message";
-        messagesContainer.appendChild(messageDiv);
-
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-
+    async function streamChatResponse(question, contextWithLinks, messagesContainer) {
+        const messageDiv = appendMessage("assistant", "");
         let completeResponse = "";
+        let lastChunkLength = 0;
 
         try {
-            const pageHTML = document.body.innerHTML;
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(pageHTML, "text/html");
-            const links = Array.from(doc.getElementsByTagName("a"))
-                .filter((a) => a.textContent.trim() && a.href)
-                .map((a) => ({
-                    text: a.textContent.trim(),
-                    href: a.href,
-                }));
-
-            const contextWithLinks = `
-        Page Content: ${pageContext}
-        
-        Available links:
-        ${links.map((link) => `${link.text} -> ${link.href}`).join("\n")}
-      `;
+            const contactData = `IRS Tax Information:
+                - Phone Numbers:
+                - Tax questions: 1-800-829-1040 7 a.m. to 7 p.m. local time
+                - Forms : 1-800-829-3676 7 a.m. to 7 p.m. local time
+                - Email : 1-800-829-1040 and time 7 a.m. to 7 p.m. local time
+                - Non-profit taxes:  1-877-829-5500 8 a.m. to 5 p.m. local time`;
 
             const knowledgeBase = await getKnowledgeBase(question);
 
-            const contactDetails = await getKnowledgeBase("give me all contact data like :Phone number or email id?");
-
-            const response = await fetch(apiUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${YOUR_API_KEY}`,
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: [
-                        {
-                            role: "system",
-                            content: `You are a helpful AI assistant for this IRS website. help in answering questions based on context data important context:${knowledgeBase} and current context: ${contextWithLinks} and free tax limit it 79,000.
-                - Help user with website content if they ask about it other wise just answer the question. in normal sentences.
-                - You are helpful and friendly ai assistant help them with their queries based on context data provided.
-                - if user asks about website content, use below format for response:
-                - use below format for response on website content:
-                  Please provide a clear and structured response with:
-                - Proper formatting and emphasis
-                - Key points clearly highlighted
-                - Keep it under 250 words
-                - Use **bold** for emphasis
-                - Use *italic* for secondary emphasis
-                - Use \`code\` for technical terms
-                - Use bullet points for lists
-                - no need of ### in formating
-                - Use clear paragraph break
-                - Referencing links from the page, use this format: [link text](URL)
-                Important: show this information in your response always:
-                 Contact info: 
-                - Email : 1-800-829-1040 and time 7 a.m. to 7 p.m. local time
-                - Non-profit taxes:  1-877-829-5500 8 a.m. to 5 p.m. local time
-                `,
-                        },
-                        {
-                            role: "user",
-                            content: `${question}`,
-                        },
-                    ],
-                    stream: true,
-                    max_tokens: 2000,
-                }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`API request failed with status ${response.status}`);
+            if (!session) {
+                session = await self.ai.languageModel.create({
+                    systemPrompt: `You are a helpful AI assistant for this IRS website. help in answering questions based on context data important context:${knowledgeBase} and current context: ${contextWithLinks} and free tax limit it 79,000.
+                    - Help user with website content if they ask about it other wise just answer the question. in normal sentences.
+                    - You are helpful and friendly ai assistant help them with their queries based on context data provided.
+                    - if user asks about website content, use below format for response:
+                    - use below format for response on website content:
+                      Please provide a clear and structured response with:
+                    - Proper formatting and emphasis
+                    - Key points clearly highlighted
+                    - Keep it under 250 words
+                    - Use **bold** for emphasis
+                    - Use *italic* for secondary emphasis
+                    - Use \`code\` for technical terms
+                    - Use bullet points for lists
+                    - no need of ### in formating
+                    - Use clear paragraph break
+                    - Referencing links from the page, use this format: [link text](URL)
+                    - Response should be in max 500 words
+                    Important: show this information in your response always:
+                     Contact info: 
+                    - Use this data for phone number: ${contactData}
+                    - Use this data for provinding relivant information: ${knowledgeBase}
+                    `,
+                    temperature: 0.7,
+                    topK: 1000
+                });
             }
 
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            const activeElement = document.activeElement;
-            let currentPosition = activeElement.selectionStart || 0;
-            let buffer = "";
+            const stream = session.promptStreaming(question);
 
-            // Only get selection and range if there is an active selection
-            const selection = window.getSelection();
-            let range = null;
-            if (selection && selection.rangeCount > 0) {
-                range = selection.getRangeAt(0);
-            }
+            console.log("Stream started", stream);
 
-            let markdownBuffer = "";
+            for await (const chunk of stream) {
+                if (!chunk.trim()) continue;
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+                // Get only the new content by comparing with the complete response
+                const newContent = chunk.slice(lastChunkLength);
+                if (!newContent.trim()) continue;
+                completeResponse = chunk;
+                lastChunkLength = chunk.length;
 
-                const chunk = decoder.decode(value);
-                buffer += chunk;
+                // Convert markdown to HTML with link support
+                const formattedContent = newContent
+                    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+                        return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="chat-link">${text}</a>`;
+                    })
+                    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+                    .replace(/\*(.*?)\*/g, "<em>$1</em>")
+                    .replace(/`(.*?)`/g, "<code>$1</code>")
+                    .replace(/\n\n/g, "<br><br>")
+                    .replace(/^[\s]*[-*]\s+(.*)/gm, "<li>$1</li>");
 
-                const lines = buffer.split("\n");
-                buffer = lines.pop() || "";
+                const hasListItems = formattedContent.includes("<li>");
+                const wrappedContent = hasListItems
+                    ? `<ul>${formattedContent}</ul>`
+                    : formattedContent;
 
-                for (const line of lines) {
-                    if (!line.trim() || line.includes("[DONE]")) continue;
+                // Append only the new content
+                messageDiv.innerHTML += wrappedContent;
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
-                    try {
-                        const cleanedLine = line.replace(/^data: /, "").trim();
-                        if (!cleanedLine) continue;
-
-                        const jsonData = JSON.parse(cleanedLine);
-                        const content = jsonData.choices[0]?.delta?.content;
-
-                        if (content) {
-                            markdownBuffer += content;
-                            completeResponse += content;
-
-                            // Convert markdown to HTML with link support
-                            const formattedContent = markdownBuffer
-                                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-                                    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="chat-link">${text}</a>`;
-                                })
-                                .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-                                .replace(/\*(.*?)\*/g, "<em>$1</em>")
-                                .replace(/`(.*?)`/g, "<code>$1</code>")
-                                .replace(/\n\n/g, "<br><br>")
-                                .replace(/^[\s]*[-*]\s+(.*)/gm, "<li>$1</li>");
-
-                            const hasListItems = formattedContent.includes("<li>");
-                            const wrappedContent = hasListItems
-                                ? `<ul>${formattedContent}</ul>`
-                                : formattedContent;
-
-                            messageDiv.innerHTML = wrappedContent;
-                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-
-                            if (!/^\s+$/.test(content)) {
-                                await new Promise((resolve) => setTimeout(resolve, 30));
-                            }
-                        }
-                    } catch (e) {
-                        continue;
-                    }
+                if (!/^\s+$/.test(newContent)) {
+                    await new Promise((resolve) => setTimeout(resolve, 30));
                 }
             }
         } catch (error) {
@@ -759,6 +683,7 @@ function createChatInterface() {
         } else {
             console.error("Messages container not found in shadow DOM");
         }
+        return messageDiv;
     }
 
     sendButton = chatWindow.querySelector(".chat-send-button");
@@ -793,35 +718,19 @@ function createChatInterface() {
 
     async function highlightRelevantContent(question, pageContext) {
         try {
-            const response = await fetch(apiUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${YOUR_API_KEY}`,
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: [
-                        {
-                            role: "system",
-                            content: "Find 2-3 most relevant text segments from the webpage content that answer the question. Return ONLY the exact text segments, separated by |||. Do not add any additional text or explanations.",
-                        },
-                        {
-                            role: "user",
-                            content: `Question: ${question}\nWebpage content: ${pageContext}`,
-                        },
-                    ],
-                    stream: false,
-                    max_tokens: 500,
-                    temperature: 0.3,
-                }),
+            const response = await runPrompt(question, {
+                systemPrompt: "Find 2-3 most relevant text segments from the webpage content that answer the question. Return ONLY the exact text segments, separated by |||. Do not add any additional text or explanations.",
+                temperature: 0.7,
+                topK: 4000,
             });
 
-            if (!response.ok) {
-                throw new Error(`API request failed with status ${response.status}`);
-            }
+            // if (!response.ok) {
+            //     throw new Error(`API request failed with status ${response.status}`);
+            // }
 
             const data = await response.json();
+
+            console.log('API response:', data);
 
             // Check if we have a valid response with content
             if (!data.choices?.[0]?.message?.content) {
@@ -1022,7 +931,7 @@ function createChatInterface() {
 
     // Add keyboard shortcut listener
     document.addEventListener('keydown', (event) => {
-        if (event.key.toLowerCase() === '¬') {
+        if (event.key.toLowerCase() === '©') {
             event.preventDefault();
             toggleChatInput();
         }

@@ -1,11 +1,12 @@
 # Gemini Navigator
+Public websites like IRS.gov often frustrate users with endless searching for vital information, causing many to give up. GeminiNavigator guides users straight to answers, saving time and effort.
 
-A Chrome extension powered by Google's Gemini AI to enhance your browsing experience.
+A Chrome extension powered by Google's Gemini Built-in AI to enhance your browsing experience.
 
 ## Instruction to use this extension
 
 Once installed, the extension will be active on your browser. You can interact with it by:
-1. open the gemini navigator terminal by "Shift + G" cmd
+1. open the gemini navigator terminal by "Option + G" cmd
 2. ask any question like "what is free tax filing limit?"
 3. get the answer from gemini navigator on right side with highlight section on the webpage
 
